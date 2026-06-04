@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<AssemblyName>Cirreum.Authentication.SignedRequest.Client</AssemblyName>
+		<RootNamespace>Cirreum.Authentication.SignedRequest</RootNamespace>
+		<Description>Client SDK for HMAC signed request authentication. Sign outgoing HTTP requests and validate incoming webhooks with HMAC-SHA256 signatures. Outbound companion to Cirreum.Authentication.SignedRequest (server-side scheme). Renamed from Cirreum.Authorization.SignedRequest.Client.</Description>
+		<PackageTags>cirreum;authentication;signedrequest;hmac;client;http;webhook</PackageTags>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!--
+			Outbound-only package — extension methods on HttpRequestMessage / HttpClient /
+			HttpRequest for signing and validating. No Cirreum-internal references; only
+			ASP.NET shared framework for HttpRequest validation helpers.
+		-->
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+</Project>
