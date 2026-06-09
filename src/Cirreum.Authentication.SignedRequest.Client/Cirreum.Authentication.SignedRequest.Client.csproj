@@ -9,10 +9,13 @@
 
 	<ItemGroup>
 		<!--
-			Outbound-only package — extension methods on HttpRequestMessage / HttpClient /
-			HttpRequest for signing and validating. No Cirreum-internal references; only
-			ASP.NET shared framework for HttpRequest validation helpers.
+			Outbound signer + standalone webhook validator. Consumes the shared RFC 9421 / RFC 9530 primitives
+			(signature-base builder, wire parser, Content-Digest, HMAC algorithm) from Cirreum.SignedRequest
+			(ADR-0021 §8) so a client-signed request verifies byte-identically server-side — and nothing more, so
+			the SDK stays lightweight (no auth-provider / ASP.NET-pipeline tail). The ASP.NET shared framework
+			powers only the HttpRequest webhook-validation helpers.
 		-->
+		<PackageReference Include="Cirreum.SignedRequest" Version="1.0.0" />
 		<FrameworkReference Include="Microsoft.AspNetCore.App" />
 	</ItemGroup>
 

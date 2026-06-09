@@ -1,54 +1,31 @@
 namespace System.Net.Http;
 
+using Cirreum.SignedRequest;
+
 /// <summary>
-/// Options for validating incoming signed requests.
+/// Options for validating incoming RFC 9421 signed requests (webhooks).
 /// </summary>
 public sealed class ValidationOptions {
 
-	/// <summary>
-	/// Default validation options.
-	/// </summary>
+	/// <summary>Default validation options.</summary>
 	public static ValidationOptions Default { get; } = new();
 
 	/// <summary>
-	/// Gets or sets the maximum age allowed for request timestamps.
-	/// Requests older than this will be rejected to prevent replay attacks.
-	/// Default is 5 minutes.
+	/// The maximum age of a signature's <c>created</c> time before it is rejected (replay window). Default 5 minutes.
 	/// </summary>
 	public TimeSpan TimestampTolerance { get; set; } = TimeSpan.FromMinutes(5);
 
-	/// <summary>
-	/// Gets or sets the maximum amount of time a request timestamp can be in the future.
-	/// Allows for clock skew between client and server.
-	/// Default is 1 minute.
-	/// </summary>
+	/// <summary>How far a signature's <c>created</c> time may be in the future (clock skew). Default 1 minute.</summary>
 	public TimeSpan FutureTimestampTolerance { get; set; } = TimeSpan.FromMinutes(1);
 
 	/// <summary>
-	/// Gets or sets the supported signature versions.
-	/// Default includes only "v1".
+	/// The covered components a signature MUST include; a signature that omits any is rejected. Default
+	/// <c>@method</c>, <c>@path</c>, <c>@query</c>, <c>content-digest</c>.
 	/// </summary>
-	public HashSet<string> SupportedSignatureVersions { get; set; } = ["v1"];
-
-	/// <summary>
-	/// Gets or sets the header name for the client ID.
-	/// </summary>
-	public string ClientIdHeaderName { get; set; } = SignedRequestExtensions.DefaultClientIdHeader;
-
-	/// <summary>
-	/// Gets or sets the header name for the timestamp.
-	/// </summary>
-	public string TimestampHeaderName { get; set; } = SignedRequestExtensions.DefaultTimestampHeader;
-
-	/// <summary>
-	/// Gets or sets the header name for the signature.
-	/// </summary>
-	public string SignatureHeaderName { get; set; } = SignedRequestExtensions.DefaultSignatureHeader;
-
-	/// <summary>
-	/// Gets or sets whether to include the query string when validating the path.
-	/// Must match the sender's configuration.
-	/// Default is true.
-	/// </summary>
-	public bool IncludeQueryString { get; set; } = true;
+	public IReadOnlyList<string> RequiredCoveredComponents { get; set; } = [
+		SignatureComponentNames.Method,
+		SignatureComponentNames.Path,
+		SignatureComponentNames.Query,
+		SignatureComponentNames.ContentDigest,
+	];
 }

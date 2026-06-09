@@ -3,6 +3,6 @@ namespace System.Net.Http;
 /// <summary>
 /// Credentials for signing HTTP requests.
 /// </summary>
-/// <param name="ClientId">The public client identifier.</param>
-/// <param name="SigningSecret">The secret key used for HMAC signature.</param>
-public sealed record SigningCredentials(string ClientId, string SigningSecret);
+/// <param name="KeyId">The credential identifier (the RFC 9421 <c>keyid</c>) the verifier resolves the secret by.</param>
+/// <param name="SigningSecret">The shared secret used for the HMAC signature.</param>
+public sealed record SigningCredentials(string KeyId, string SigningSecret);

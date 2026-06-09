@@ -1,46 +1,47 @@
 namespace System.Net.Http;
 
+using Cirreum.SignedRequest;
 using System.Text.Json;
 
 /// <summary>
-/// Options for signing HTTP requests.
+/// Options for signing outbound HTTP requests as RFC 9421 HTTP Message Signatures.
 /// </summary>
 public sealed class SigningOptions {
 
-	/// <summary>
-	/// Default signing options.
-	/// </summary>
+	/// <summary>Default signing options.</summary>
 	public static SigningOptions Default { get; } = new();
 
-	/// <summary>
-	/// Gets or sets the signature version. Default is "v1".
-	/// </summary>
-	public string SignatureVersion { get; set; } = "v1";
+	/// <summary>The RFC 9421 algorithm identifier to sign with. Default <c>hmac-sha256</c> (the only v1 algorithm).</summary>
+	public string Algorithm { get; set; } = "hmac-sha256";
 
 	/// <summary>
-	/// Gets or sets whether to include the query string in the signature. Default is true.
+	/// The covered components to sign. Default <c>@method</c>, <c>@path</c>, <c>@query</c>, <c>content-digest</c>
+	/// (host-independent — no <c>@authority</c>, per ADR-0021).
 	/// </summary>
-	public bool IncludeQueryString { get; set; } = true;
+	public IReadOnlyList<string> CoveredComponents { get; set; } = [
+		SignatureComponentNames.Method,
+		SignatureComponentNames.Path,
+		SignatureComponentNames.Query,
+		SignatureComponentNames.ContentDigest,
+	];
 
-	/// <summary>
-	/// Gets or sets the header name for the client ID. Default is "X-Client-Id".
-	/// </summary>
-	public string ClientIdHeaderName { get; set; } = SignedRequestExtensions.DefaultClientIdHeader;
+	/// <summary>The signature label used in the <c>Signature</c> / <c>Signature-Input</c> dictionaries. Default <c>sig1</c>.</summary>
+	public string SignatureLabel { get; set; } = "sig1";
 
-	/// <summary>
-	/// Gets or sets the header name for the timestamp. Default is "X-Timestamp".
-	/// </summary>
-	public string TimestampHeaderName { get; set; } = SignedRequestExtensions.DefaultTimestampHeader;
+	/// <summary>When set, the signature carries an <c>expires</c> of <c>created + ExpiresAfter</c>.</summary>
+	public TimeSpan? ExpiresAfter { get; set; }
 
-	/// <summary>
-	/// Gets or sets the header name for the signature. Default is "X-Signature".
-	/// </summary>
-	public string SignatureHeaderName { get; set; } = SignedRequestExtensions.DefaultSignatureHeader;
+	/// <summary>Whether to emit a random <c>nonce</c> parameter (required by a verifier's strict-nonce posture). Default <see langword="true"/>.</summary>
+	public bool IncludeNonce { get; set; } = true;
 
-	/// <summary>
-	/// Gets or sets the JSON serializer options for request bodies. Default uses camelCase.
-	/// </summary>
+	/// <summary>The number of random bytes in the generated nonce. Default 16 (128-bit).</summary>
+	public int NonceBytes { get; set; } = 16;
+
+	/// <summary>The optional explicit audience (<c>tag</c>) — required only when the credential is bound to one.</summary>
+	public string? Tag { get; set; }
+
+	/// <summary>The JSON serializer options for request bodies. Default uses camelCase.</summary>
 	public JsonSerializerOptions? JsonSerializerOptions { get; set; } = new() {
-		PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+		PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
 	};
 }

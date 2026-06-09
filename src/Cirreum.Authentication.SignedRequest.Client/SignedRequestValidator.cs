@@ -1,146 +1,120 @@
 namespace System.Net.Http;
 
-using System.Security.Cryptography;
+using Cirreum.SignedRequest;
 using System.Text;
 
 /// <summary>
-/// Validates incoming signed HTTP requests (webhooks).
+/// Validates incoming RFC 9421 signed HTTP requests (webhooks). Stateless: it verifies the signature,
+/// freshness (<c>created</c>/<c>expires</c>), and the <c>Content-Digest</c> body binding via the shared §8
+/// builder. Replay protection (single-use <c>nonce</c>) requires a store and is the receiver's
+/// responsibility — this validator does not track nonces.
 /// </summary>
-/// <remarks>
-/// Initializes a new instance of the <see cref="SignedRequestValidator"/> class.
-/// </remarks>
 /// <param name="options">Validation options. If null, defaults are used.</param>
 public sealed class SignedRequestValidator(ValidationOptions? options = null) {
+
+	private const string HmacSha256 = "hmac-sha256";
 
 	private readonly ValidationOptions _options = options ?? ValidationOptions.Default;
 
 	/// <summary>
-	/// Validates a signed request.
+	/// Validates a signed request from its RFC 9421 headers, request line, and body.
 	/// </summary>
 	/// <param name="body">The raw request body bytes.</param>
-	/// <param name="signature">The signature header value (e.g., "v1=abc123...").</param>
-	/// <param name="timestamp">The Unix timestamp from the request.</param>
-	/// <param name="httpMethod">The HTTP method (GET, POST, etc.).</param>
-	/// <param name="path">The request path including query string if applicable.</param>
+	/// <param name="signatureInput">The <c>Signature-Input</c> header value.</param>
+	/// <param name="signature">The <c>Signature</c> header value.</param>
+	/// <param name="contentDigest">The <c>Content-Digest</c> header value (RFC 9530).</param>
+	/// <param name="httpMethod">The HTTP method.</param>
+	/// <param name="path">The absolute request path (percent-encoded).</param>
+	/// <param name="query">The query string including the leading <c>?</c> (empty for no query).</param>
 	/// <param name="signingSecret">The signing secret to validate against.</param>
-	/// <returns>A validation result indicating success or failure.</returns>
 	public SignatureValidationResult Validate(
 		ReadOnlySpan<byte> body,
-		string signature,
-		long timestamp,
+		string? signatureInput,
+		string? signature,
+		string? contentDigest,
 		string httpMethod,
 		string path,
+		string query,
 		string signingSecret) {
 
-		ArgumentException.ThrowIfNullOrWhiteSpace(signature);
 		ArgumentException.ThrowIfNullOrWhiteSpace(httpMethod);
-		ArgumentException.ThrowIfNullOrWhiteSpace(path);
 		ArgumentException.ThrowIfNullOrWhiteSpace(signingSecret);
 
-		// 1. Validate timestamp
-		var timestampResult = this.ValidateTimestamp(timestamp);
-		if (!timestampResult.IsValid) {
-			return timestampResult;
+		if (!SignatureWireParser.TryParse(signatureInput, signature, out var entries) || entries.Count != 1) {
+			return SignatureValidationResult.Failed("Malformed or ambiguous Signature / Signature-Input headers.");
 		}
 
-		// 2. Parse signature
-		var signatureParts = signature.Split('=', 2);
-		if (signatureParts.Length != 2) {
-			return SignatureValidationResult.Failed("Invalid signature format. Expected 'version=signature'.");
+		var entry = entries[0];
+
+		foreach (var required in this._options.RequiredCoveredComponents) {
+			if (!entry.CoveredComponents.Contains(required)) {
+				return SignatureValidationResult.Failed($"Signature does not cover required component '{required}'.");
+			}
 		}
 
-		var version = signatureParts[0];
-		var providedSignature = signatureParts[1];
-
-		if (!this._options.SupportedSignatureVersions.Contains(version)) {
-			return SignatureValidationResult.Failed($"Unsupported signature version: {version}");
+		if (!string.Equals(entry.Algorithm, HmacSha256, StringComparison.Ordinal)) {
+			return SignatureValidationResult.Failed($"Unsupported signature algorithm '{entry.Algorithm}'.");
 		}
 
-		// 3. Compute body hash
-		var bodyHash = ComputeBodyHash(body);
+		var freshness = this.ValidateFreshness(entry.Created, entry.Expires);
+		if (!freshness.IsValid) {
+			return freshness;
+		}
 
-		// 4. Build canonical request and compute expected signature
-		var method = httpMethod.ToUpperInvariant();
-		var canonicalRequest = $"{timestamp}.{method}.{path}.{bodyHash}";
-		var expectedSignature = ComputeSignatureValue(canonicalRequest, signingSecret);
+		var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		if (!string.IsNullOrEmpty(contentDigest)) {
+			fields[SignatureComponentNames.ContentDigest] = contentDigest;
+		}
 
-		// 5. Constant-time comparison
-		var providedBytes = Encoding.UTF8.GetBytes(providedSignature.ToLowerInvariant());
-		var expectedBytes = Encoding.UTF8.GetBytes(expectedSignature.ToLowerInvariant());
+		var components = SignatureBaseComponents.FromRequest(httpMethod, path, query, fields);
 
-		if (!CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes)) {
+		byte[] signatureBase;
+		try {
+			signatureBase = SignatureBaseBuilder.BuildBase(components, entry.CoveredComponents, entry.SignatureParamsValue);
+		} catch (InvalidOperationException ex) {
+			return SignatureValidationResult.Failed(ex.Message);
+		}
+
+		if (!new HmacSha256SignedRequestAlgorithm().Verify(signatureBase, entry.Signature, Encoding.UTF8.GetBytes(signingSecret))) {
 			return SignatureValidationResult.Failed("Signature mismatch.");
 		}
 
+		if (entry.CoveredComponents.Contains(SignatureComponentNames.ContentDigest) && !ContentDigest.Verify(contentDigest, body)) {
+			return SignatureValidationResult.Failed("Content-Digest does not match the request body.");
+		}
+
 		return SignatureValidationResult.Success();
 	}
 
-	/// <summary>
-	/// Validates a signed request.
-	/// </summary>
-	/// <param name="body">The raw request body bytes.</param>
-	/// <param name="signature">The signature header value.</param>
-	/// <param name="timestamp">The Unix timestamp from the request.</param>
-	/// <param name="httpMethod">The HTTP method.</param>
-	/// <param name="path">The request path.</param>
-	/// <param name="signingSecret">The signing secret.</param>
-	/// <returns>A validation result.</returns>
-	public SignatureValidationResult Validate(
-		byte[] body,
-		string signature,
-		long timestamp,
-		string httpMethod,
-		string path,
-		string signingSecret) {
+	/// <summary>Validates only the freshness of a signature's <c>created</c> time.</summary>
+	public SignatureValidationResult ValidateTimestamp(long created) => this.ValidateFreshness(created, expires: null);
 
-		return this.Validate(body.AsSpan(), signature, timestamp, httpMethod, path, signingSecret);
-	}
-
-	/// <summary>
-	/// Validates only the timestamp portion of a signed request.
-	/// </summary>
-	/// <param name="timestamp">The Unix timestamp to validate.</param>
-	/// <returns>A validation result.</returns>
-	public SignatureValidationResult ValidateTimestamp(long timestamp) {
-		var requestTime = DateTimeOffset.FromUnixTimeSeconds(timestamp);
+	private SignatureValidationResult ValidateFreshness(long created, long? expires) {
 		var now = DateTimeOffset.UtcNow;
+		var createdTime = DateTimeOffset.FromUnixTimeSeconds(created);
 
-		// Check if timestamp is too old
-		var age = now - requestTime;
+		var age = now - createdTime;
 		if (age > this._options.TimestampTolerance) {
 			return SignatureValidationResult.Failed(
-				$"Timestamp is too old. Age: {age.TotalSeconds:F0}s, Max: {this._options.TimestampTolerance.TotalSeconds:F0}s");
+				$"Signature is too old. Age: {age.TotalSeconds:F0}s, max: {this._options.TimestampTolerance.TotalSeconds:F0}s.");
 		}
 
-		// Check if timestamp is too far in the future (clock skew)
-		if (requestTime > now + this._options.FutureTimestampTolerance) {
+		if (createdTime > now + this._options.FutureTimestampTolerance) {
 			return SignatureValidationResult.Failed(
-				$"Timestamp is too far in the future. Allowed skew: {this._options.FutureTimestampTolerance.TotalSeconds:F0}s");
+				$"Signature created time is too far in the future. Allowed skew: {this._options.FutureTimestampTolerance.TotalSeconds:F0}s.");
+		}
+
+		if (expires is { } expiresSeconds) {
+			var expiresTime = DateTimeOffset.FromUnixTimeSeconds(expiresSeconds);
+			if (now > expiresTime) {
+				return SignatureValidationResult.Failed("Signature has expired.");
+			}
+
+			if (expiresTime - createdTime > this._options.TimestampTolerance + this._options.FutureTimestampTolerance) {
+				return SignatureValidationResult.Failed("Declared validity exceeds the allowed window.");
+			}
 		}
 
 		return SignatureValidationResult.Success();
-	}
-
-	/// <summary>
-	/// Computes the SHA256 hash of the body.
-	/// </summary>
-	/// <param name="body">The body bytes.</param>
-	/// <returns>The lowercase hex-encoded hash.</returns>
-	public static string ComputeBodyHash(ReadOnlySpan<byte> body) {
-		if (body.IsEmpty) {
-			return SignedRequestExtensions.EmptyBodyHash;
-		}
-
-		Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
-		SHA256.HashData(body, hash);
-		return Convert.ToHexString(hash).ToLowerInvariant();
-	}
-
-	private static string ComputeSignatureValue(string canonicalRequest, string signingSecret) {
-		var keyBytes = Encoding.UTF8.GetBytes(signingSecret);
-		var messageBytes = Encoding.UTF8.GetBytes(canonicalRequest);
-
-		var hmac = HMACSHA256.HashData(keyBytes, messageBytes);
-		return Convert.ToHexString(hmac).ToLowerInvariant();
 	}
 }
