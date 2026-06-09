@@ -6,18 +6,18 @@
 [![License](https://img.shields.io/badge/license-MIT-F2F2F2?style=flat-square&labelColor=1F1F1F)](https://github.com/cirreum/Cirreum.Authentication.SignedRequest.Client/blob/main/LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-003D8F?style=flat-square&labelColor=1F1F1F)](https://dotnet.microsoft.com/)
 
-**Client SDK for HMAC signed request authentication**
-
-> **Migrating from `Cirreum.Authorization.SignedRequest.Client`?** This package is its renamed successor — same surface, proper pillar. See [`docs/MIGRATION-v1.md`](docs/MIGRATION-v1.md). Update one `<PackageReference>` and rebuild.
+**Client SDK for RFC 9421 HTTP Message Signatures — sign outbound requests, validate inbound webhooks**
 
 ## Overview
 
-**Cirreum.Authentication.SignedRequest.Client** is the outbound companion to the server-side [`Cirreum.Authentication.SignedRequest`](https://github.com/cirreum/Cirreum.Authentication.SignedRequest) scheme. It provides two integration surfaces:
+**Cirreum.Authentication.SignedRequest.Client** is the full-duplex client counterpart to the server-side [`Cirreum.Authentication.SignedRequest`](https://github.com/cirreum/Cirreum.Authentication.SignedRequest) scheme. It builds on the shared, dependency-free [`Cirreum.SignedRequest`](https://github.com/cirreum/Cirreum.SignedRequest) primitives — the same code the server uses — so what you sign here verifies byte-identically there, and vice versa. It has **no dependency on the server-side scheme or `AuthenticationProvider`.**
 
-- **Signing outbound requests** — extension methods on `HttpRequestMessage` and `HttpClient` to sign requests with HMAC-SHA256 + timestamp
-- **Validating inbound webhooks** — extension methods on ASP.NET Core `HttpRequest` to validate signed webhooks against a known secret, plus a standalone `SignedRequestValidator` usable outside ASP.NET Core
+Two surfaces:
 
-The extension types live under `System.Net.Http` and `Microsoft.AspNetCore.Http` namespaces — webhook receivers can write `request.ValidateSignatureAsync(...)` without any additional `using` directive.
+- **Sign outbound requests** — extension methods on `HttpRequestMessage` / `HttpClient` that add the RFC 9421 `Signature` / `Signature-Input` and RFC 9530 `Content-Digest` headers.
+- **Validate inbound webhooks** — extension methods on ASP.NET Core `HttpRequest`, plus a standalone `SignedRequestValidator` for use outside ASP.NET Core.
+
+The extension types live in the `System.Net.Http` and `Microsoft.AspNetCore.Http` namespaces, so `request.SignRequestAsync(...)` / `request.ValidateSignatureAsync(...)` are available without an extra `using`.
 
 ## Installation
 
@@ -30,47 +30,39 @@ dotnet add package Cirreum.Authentication.SignedRequest.Client
 ```csharp
 using var client = new HttpClient { BaseAddress = new Uri("https://api.partner.example") };
 
+// Sign + send with a JSON body in one call:
 var response = await client.SendSignedAsync(
-    HttpMethod.Post,
-    "/v1/events",
-    clientId: "my-app",
+    HttpMethod.Post, "/v1/events",
+    keyId: "my-app",
     signingSecret: signingSecret,
     content: new { eventType = "order.placed", id = orderId });
 ```
 
-Or sign a pre-built `HttpRequestMessage`:
+Or sign a prepared `HttpRequestMessage`:
 
 ```csharp
-var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events") {
-    Content = JsonContent.Create(payload)
-};
-await request.SignRequestAsync(clientId, signingSecret);
+var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events") { Content = JsonContent.Create(payload) };
+await request.SignRequestAsync(keyId, signingSecret);
 var response = await client.SendAsync(request);
 ```
 
-`SigningOptions` controls the version identifier, header names, JSON serializer options, and whether the query string is included in the signature.
+`SigningOptions` controls the algorithm, covered components, signature label, `expires` window, the nonce (≥ 128-bit; smaller is rejected), the audience `tag`, and JSON serialization. Sign as the **last** mutation before sending — a later handler that changes the URI, headers, or body would invalidate the signature.
 
 ## Validating inbound webhooks (ASP.NET Core)
 
 ```csharp
 app.MapPost("/webhooks/partner", async (HttpRequest request, IConfiguration config) => {
-    await request.ValidateSignatureOrThrowAsync(config["Partner:SigningSecret"]!);
+    var result = await request.ValidateSignatureAsync(config["Partner:SigningSecret"]!);
+    if (!result.IsValid) {
+        return Results.Unauthorized();
+    }
 
-    // ... handle the webhook payload
+    // request.GetSignedRequestKeyId() identifies which credential signed it.
     return Results.Ok();
 });
 ```
 
-For non-throwing validation:
-
-```csharp
-var result = await request.ValidateSignatureAsync(signingSecret);
-if (!result.IsValid) {
-    return Results.Unauthorized();
-}
-```
-
-`ValidationOptions` controls the timestamp tolerance, future-skew window, supported signature versions, header names, and whether the query string is included.
+`ValidateSignatureOrThrowAsync(...)` is the throwing variant. `ValidationOptions` controls the timestamp tolerance (default 5 min), future-skew window (default 1 min), and the required covered components.
 
 ## Validating outside ASP.NET Core
 
@@ -78,30 +70,47 @@ if (!result.IsValid) {
 var validator = new SignedRequestValidator(ValidationOptions.Default);
 var result = validator.Validate(
     body: bodyBytes,
+    signatureInput: signatureInputHeader,
     signature: signatureHeader,
-    timestamp: timestamp,
+    contentDigest: contentDigestHeader,
     httpMethod: "POST",
     path: "/v1/events",
+    query: "",
     signingSecret: signingSecret);
 ```
 
-## Wire format
+> The webhook validator verifies the signature, `created` / `expires` freshness, and the `Content-Digest` body binding. Single-use **nonce replay** tracking is the receiver's responsibility (it needs a store) — the stateless validator does not track nonces.
 
-Signed requests carry three headers:
+## Wire format (RFC 9421 / RFC 9530)
 
 | Header | Description |
 |---|---|
-| `X-Client-Id` | Public client identifier; the server looks up the matching signing secret |
-| `X-Timestamp` | Unix timestamp (seconds); replay protection |
-| `X-Signature` | `v1={hexstring}` — HMAC-SHA256 over `{timestamp}.{method}.{path}.{bodyHash}`, lowercase hex-encoded |
+| `Signature-Input` | The covered-component list + parameters (`created`, `expires`, `nonce`, `keyid`, `alg`, `tag`) |
+| `Signature` | The HMAC over the RFC 9421 signature base, as an RFC 8941 byte sequence |
+| `Content-Digest` | RFC 9530 `sha-256=:…:` over the body |
 
-`bodyHash` is the SHA-256 of the body (or the empty-body sentinel for `GET`/`HEAD`/`DELETE`/`OPTIONS`).
+The default covered set is `@method`, `@path`, `@query`, `content-digest`. The credential is identified by the `keyid` parameter — there are no custom `X-*` headers.
+
+## RFC conformance profile
+
+> Cirreum SignedRequest implements a constrained Cirreum profile of RFC 9421 and RFC 9530. The implementation intentionally supports the covered components, algorithms, digest forms, and validation behavior documented here; unsupported general RFC features are out of scope unless explicitly listed.
+
+| Area | Supported | Not supported |
+|---|---|---|
+| Covered components | `@method`, `@path`, `@query`, HTTP fields (`content-digest`) | `@authority` (intentionally dropped), `@target-uri`, `@scheme`, `@status` (response signing), `@query-param`, component parameters (`sf` / `key` / `bs` / `req`) |
+| Algorithms | `hmac-sha256` | others are additive via the shared `ISignedRequestAlgorithm` seam (e.g. Ed25519) |
+| Digest (RFC 9530) | `Content-Digest` with `sha-256` | other digest algorithms (ignored), `Repr-Digest` / `Want-*-Digest` |
+| Signatures per request | exactly one | multi-signature messages are rejected by the validator |
+| Structured fields (RFC 8941) | the dictionary / inner-list / string / byte-sequence / integer subset these headers use | a general RFC 8941 parser |
+
+`@path` / `@query` are normalized to the RFC 9421 §2.2.6/§2.2.7 + RFC 3986 §6.2.2 canonical form, so a request signed here validates regardless of how the receiver's host re-encodes the URL. Conformance is verified against RFC 4231 and RFC 9530 published vectors; the signature base is locked by a known-answer vector.
 
 ## Security considerations
 
-- **Timestamp tolerance** — Default 5 minutes (validator) and 1 minute future skew. Tighten for partners with reliable clocks.
-- **Signing secrets** — Treat as secrets. Rotate periodically; the signature version field supports clean rotation of the algorithm itself.
-- **Transport security** — Always use HTTPS to prevent tampering of headers or body beyond the signature's scope.
+- **Nonce** — left enabled (128-bit CSPRNG) so requests satisfy a server's strict-nonce posture; `NonceBytes` below 16 is rejected.
+- **Signing secrets** — treat as secrets; ≥ 256-bit recommended. `SigningCredentials.ToString()` redacts the secret.
+- **Audience** — set the `Tag` only when the target credential is bound to an audience.
+- **Transport** — always use HTTPS.
 
 ## License
 
