@@ -3,7 +3,7 @@
 	<PropertyGroup>
 		<AssemblyName>Cirreum.Authentication.SignedRequest.Client</AssemblyName>
 		<RootNamespace>Cirreum.Authentication.SignedRequest</RootNamespace>
-		<Description>Client SDK for HMAC signed request authentication. Sign outgoing HTTP requests and validate incoming webhooks with HMAC-SHA256 signatures. Outbound companion to Cirreum.Authentication.SignedRequest (server-side scheme). Renamed from Cirreum.Authorization.SignedRequest.Client.</Description>
+		<Description>Client SDK for RFC 9421 HTTP Message Signatures. Sign outgoing HTTP requests and validate incoming webhooks (HMAC-SHA256, with RFC 9530 Content-Digest) — the full-duplex client counterpart to the server-side Cirreum.Authentication.SignedRequest scheme, built on the shared Cirreum.SignedRequest primitives.</Description>
 		<PackageTags>cirreum;authentication;signedrequest;hmac;client;http;webhook</PackageTags>
 	</PropertyGroup>
 
