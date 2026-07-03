@@ -91,7 +91,7 @@ public sealed class SignedRequestClientTests {
 	[Fact]
 	public async Task A_signature_missing_a_required_component_fails() {
 		var request = NewRequest();
-		await request.SignRequestAsync(KeyId, Secret, new SigningOptions {
+		await request.SignRequestAsync(KeyId, Secret, new OutboundSigningOptions {
 			CoveredComponents = ["@method", "@path", "@query"], // omits content-digest
 		});
 		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(request);
@@ -158,7 +158,7 @@ public sealed class SignedRequestClientTests {
 	[Fact]
 	public async Task The_validator_rejects_a_body_the_signature_does_not_bind_H1() {
 		var request = NewRequest("POST", "https://api.example.com/orders", "{\"id\":1}");
-		await request.SignRequestAsync(KeyId, Secret, new SigningOptions {
+		await request.SignRequestAsync(KeyId, Secret, new OutboundSigningOptions {
 			CoveredComponents = ["@method", "@path", "@query"], // omits content-digest
 		});
 		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(request);
@@ -235,7 +235,7 @@ public sealed class SignedRequestClientTests {
 	[Fact]
 	public async Task The_validator_enforces_the_expected_audience_tag_B4() {
 		var request = NewRequest();
-		await request.SignRequestAsync(KeyId, Secret, new SigningOptions { Tag = "audience-a" });
+		await request.SignRequestAsync(KeyId, Secret, new OutboundSigningOptions { Tag = "audience-a" });
 		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(request);
 
 		new SignedRequestValidator(new ValidationOptions { ExpectedTag = "audience-a" })
@@ -313,7 +313,7 @@ public sealed class SignedRequestClientTests {
 
 	[Fact]
 	public void NonceBytes_below_128_bit_is_rejected() {
-		var act = () => new SigningOptions { NonceBytes = 8 };
+		var act = () => new OutboundSigningOptions { NonceBytes = 8 };
 
 		act.Should().Throw<ArgumentOutOfRangeException>();
 	}
