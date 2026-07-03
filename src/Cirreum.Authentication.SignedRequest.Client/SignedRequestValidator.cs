@@ -12,7 +12,8 @@ using System.Text;
 /// <param name="options">Validation options. If null, defaults are used.</param>
 public sealed class SignedRequestValidator(ValidationOptions? options = null) {
 
-	private const string HmacSha256 = "hmac-sha256";
+	// Bind the wire alg id to the shared Common constant so a future rename cannot silently desync this surface (F4).
+	private const string HmacSha256 = HmacSha256SignedRequestAlgorithm.Id;
 
 	private readonly ValidationOptions _options = options ?? ValidationOptions.Default;
 
@@ -39,6 +40,13 @@ public sealed class SignedRequestValidator(ValidationOptions? options = null) {
 
 		ArgumentException.ThrowIfNullOrWhiteSpace(httpMethod);
 		ArgumentException.ThrowIfNullOrWhiteSpace(signingSecret);
+
+		// Secret-strength floor (B3) — the same gate the server resolver enforces, so the two verify surfaces are
+		// consistent rather than one fail-closing on a weak secret and the other silently accepting it.
+		if (!SignedRequestSecret.MeetsFloor(signingSecret)) {
+			return SignatureValidationResult.Failed(
+				$"The signing secret is below the {SignedRequestSecret.MinimumBytes}-byte minimum (NIST SP 800-107).");
+		}
 
 		if (!SignatureWireParser.TryParse(signatureInput, signature, out var entries) || entries.Count != 1) {
 			return SignatureValidationResult.Failed("Malformed or ambiguous Signature / Signature-Input headers.");
@@ -79,8 +87,22 @@ public sealed class SignedRequestValidator(ValidationOptions? options = null) {
 			return SignatureValidationResult.Failed("Signature mismatch.");
 		}
 
-		if (entry.CoveredComponents.Contains(SignatureComponentNames.ContentDigest) && !ContentDigest.Verify(contentDigest, body)) {
-			return SignatureValidationResult.Failed("Content-Digest does not match the request body.");
+		// Audience (tag) binding (B4): checked AFTER the signature verifies, so the tag is authenticated. A request
+		// signed for a different audience than this receiver expects is rejected (the shared-credential defense).
+		if (this._options.ExpectedTag is { } expectedTag && !string.Equals(entry.Tag, expectedTag, StringComparison.Ordinal)) {
+			return SignatureValidationResult.Failed("Audience (tag) mismatch.");
+		}
+
+		// Content-Digest binds the body (RFC 9530). If the signature does NOT cover content-digest yet the request
+		// carries a body (or a Content-Digest the signer chose not to bind), that body is unauthenticated and
+		// swappable — fail closed regardless of RequiredCoveredComponents (H1), matching the server handler.
+		var coversDigest = entry.CoveredComponents.Contains(SignatureComponentNames.ContentDigest);
+		if (coversDigest) {
+			if (!ContentDigest.Verify(contentDigest, body)) {
+				return SignatureValidationResult.Failed("Content-Digest does not match the request body.");
+			}
+		} else if (body.Length > 0 || !string.IsNullOrEmpty(contentDigest)) {
+			return SignatureValidationResult.Failed("Request carries a body the signature does not bind (content-digest is not a covered component).");
 		}
 
 		return SignatureValidationResult.Success();

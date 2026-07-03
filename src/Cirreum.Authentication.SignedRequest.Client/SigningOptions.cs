@@ -8,11 +8,14 @@ using System.Text.Json;
 /// </summary>
 public sealed class SigningOptions {
 
-	/// <summary>Default signing options.</summary>
-	public static SigningOptions Default { get; } = new();
+	/// <summary>A fresh default instance (a new object each access, so a caller mutating it can't bleed config into others) (F2).</summary>
+	public static SigningOptions Default => new();
 
-	/// <summary>The RFC 9421 algorithm identifier to sign with. Default <c>hmac-sha256</c> (the only v1 algorithm).</summary>
-	public string Algorithm { get; set; } = "hmac-sha256";
+	/// <summary>The shared camelCase JSON options applied to a JSON body when <see cref="JsonSerializerOptions"/> is null.</summary>
+	public static JsonSerializerOptions DefaultJsonOptions { get; } = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+	/// <summary>The RFC 9421 algorithm identifier to sign with. Default <c>hmac-sha256</c> (the only v1 algorithm), bound to the shared constant (F4).</summary>
+	public string Algorithm { get; set; } = HmacSha256SignedRequestAlgorithm.Id;
 
 	/// <summary>
 	/// The covered components to sign. Default <c>@method</c>, <c>@path</c>, <c>@query</c>, <c>content-digest</c>
@@ -54,8 +57,6 @@ public sealed class SigningOptions {
 	/// <summary>The optional explicit audience (<c>tag</c>) — required only when the credential is bound to one.</summary>
 	public string? Tag { get; set; }
 
-	/// <summary>The JSON serializer options for request bodies. Default uses camelCase.</summary>
-	public JsonSerializerOptions? JsonSerializerOptions { get; set; } = new() {
-		PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-	};
+	/// <summary>The JSON serializer options for a JSON request body. When null, <see cref="DefaultJsonOptions"/> (camelCase) is used — so an explicit null no longer flips to STJ PascalCase defaults (F3).</summary>
+	public JsonSerializerOptions? JsonSerializerOptions { get; set; }
 }

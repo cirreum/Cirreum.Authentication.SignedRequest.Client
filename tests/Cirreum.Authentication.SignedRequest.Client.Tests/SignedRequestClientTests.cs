@@ -153,6 +153,162 @@ public sealed class SignedRequestClientTests {
 		result.IsValid.Should().BeTrue(result.ErrorMessage);
 	}
 
+	// --- H1: a body the signature does not bind is rejected even when content-digest is not a required component. ---
+
+	[Fact]
+	public async Task The_validator_rejects_a_body_the_signature_does_not_bind_H1() {
+		var request = NewRequest("POST", "https://api.example.com/orders", "{\"id\":1}");
+		await request.SignRequestAsync(KeyId, Secret, new SigningOptions {
+			CoveredComponents = ["@method", "@path", "@query"], // omits content-digest
+		});
+		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(request);
+
+		// Operator dropped content-digest from the required set, so the required-component check passes — but the
+		// request carries a body the signature does not bind, which must still fail closed (H1).
+		var options = new ValidationOptions { RequiredCoveredComponents = ["@method", "@path", "@query"] };
+		var result = new SignedRequestValidator(options)
+			.Validate(body, signatureInput, signature, contentDigest, method, path, query, Secret);
+
+		result.IsValid.Should().BeFalse();
+		result.ErrorMessage.Should().Contain("does not bind");
+	}
+
+	// --- A2: relative-URI signing. SignRequestAsync (request-only) cannot resolve the wire path and throws;
+	//        SendSignedAsync resolves against HttpClient.BaseAddress so @path includes the prefix. ---
+
+	[Fact]
+	public async Task Signing_a_relative_RequestUri_throws() {
+		var request = new HttpRequestMessage(HttpMethod.Get, "orders?page=1"); // relative — no absolute path
+
+		var act = () => request.SignRequestAsync(KeyId, Secret);
+
+		await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*absolute RequestUri*");
+	}
+
+	[Fact]
+	public async Task SendSigned_resolves_a_relative_uri_against_BaseAddress_and_signs_the_prefixed_path() {
+		var handler = new CapturingHandler();
+		using var client = new HttpClient(handler) { BaseAddress = new Uri("https://api.example.com/v1/") };
+		var request = new HttpRequestMessage(HttpMethod.Get, "orders?page=1"); // relative
+
+		await client.SendSignedAsync(request, KeyId, Secret);
+
+		var captured = handler.Captured!;
+		captured.RequestUri!.AbsolutePath.Should().Be("/v1/orders", "the BaseAddress prefix is resolved before signing");
+
+		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(captured);
+		new SignedRequestValidator()
+			.Validate(body, signatureInput, signature, contentDigest, method, path, query, Secret)
+			.IsValid.Should().BeTrue("the signature covers the resolved /v1/orders path");
+	}
+
+	private sealed class CapturingHandler : HttpMessageHandler {
+		public HttpRequestMessage? Captured { get; private set; }
+
+		protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) {
+			this.Captured = request;
+			return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+		}
+	}
+
+	// --- Batch 4: cross-surface hardening of the SDK validator (B1–B4) + secret generator / sign floor (E2/E3). ---
+
+	[Fact]
+	public void The_validator_default_freshness_window_is_aligned_to_the_server_B1() {
+		ValidationOptions.Default.TimestampTolerance.Should().Be(TimeSpan.FromMinutes(2));
+		ValidationOptions.Default.FutureTimestampTolerance.Should().Be(TimeSpan.FromSeconds(30));
+	}
+
+	[Fact]
+	public async Task The_validator_rejects_a_secret_below_the_floor_B3() {
+		var request = NewRequest();
+		await request.SignRequestAsync(KeyId, Secret);
+		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(request);
+
+		var result = new SignedRequestValidator()
+			.Validate(body, signatureInput, signature, contentDigest, method, path, query, "short"); // < 16 bytes
+
+		result.IsValid.Should().BeFalse();
+		result.ErrorMessage.Should().Contain("minimum");
+	}
+
+	[Fact]
+	public async Task The_validator_enforces_the_expected_audience_tag_B4() {
+		var request = NewRequest();
+		await request.SignRequestAsync(KeyId, Secret, new SigningOptions { Tag = "audience-a" });
+		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(request);
+
+		new SignedRequestValidator(new ValidationOptions { ExpectedTag = "audience-a" })
+			.Validate(body, signatureInput, signature, contentDigest, method, path, query, Secret)
+			.IsValid.Should().BeTrue();
+
+		var mismatched = new SignedRequestValidator(new ValidationOptions { ExpectedTag = "audience-b" })
+			.Validate(body, signatureInput, signature, contentDigest, method, path, query, Secret);
+		mismatched.IsValid.Should().BeFalse();
+		mismatched.ErrorMessage.Should().Contain("tag");
+	}
+
+	[Fact]
+	public async Task The_webhook_validator_claims_the_nonce_and_rejects_a_replay_B2() {
+		var request = NewRequest();
+		await request.SignRequestAsync(KeyId, Secret); // the signer emits a nonce by default
+		var (body, signatureInput, signature, contentDigest, method, path, query) = Extract(request);
+
+		var seen = new HashSet<string>();
+		var options = new ValidationOptions {
+			RequireNonce = true,
+			ReplayClaim = (nonce, _) => ValueTask.FromResult(seen.Add(nonce)),
+		};
+
+		DefaultHttpContext Ctx() {
+			var c = new DefaultHttpContext();
+			c.Request.Method = method;
+			c.Request.Path = path;
+			c.Request.QueryString = new QueryString(query);
+			c.Request.Body = new MemoryStream(body, writable: false);
+			c.Request.Headers["Signature-Input"] = signatureInput;
+			c.Request.Headers["Signature"] = signature;
+			c.Request.Headers["Content-Digest"] = contentDigest;
+			return c;
+		}
+
+		var first = await Ctx().Request.ValidateSignatureAsync(Secret, options);
+		var second = await Ctx().Request.ValidateSignatureAsync(Secret, options);
+
+		first.IsValid.Should().BeTrue(first.ErrorMessage);
+		second.IsValid.Should().BeFalse("the nonce was already claimed");
+		second.ErrorMessage.Should().Contain("Replay");
+	}
+
+	[Fact]
+	public async Task GetSignedRequestNonce_surfaces_the_signed_nonce_B2() {
+		var request = NewRequest();
+		await request.SignRequestAsync(KeyId, Secret);
+		var (_, signatureInput, signature, _, _, _, _) = Extract(request);
+		var ctx = new DefaultHttpContext();
+		ctx.Request.Headers["Signature-Input"] = signatureInput;
+		ctx.Request.Headers["Signature"] = signature;
+
+		ctx.Request.GetSignedRequestNonce().Should().NotBeNullOrEmpty();
+	}
+
+	[Fact]
+	public void SigningSecretGenerator_produces_a_secret_above_the_floor_E2() {
+		var secret = SigningSecretGenerator.Generate();
+
+		SignedRequestSecret.MeetsFloor(secret).Should().BeTrue();
+		secret.Should().NotContain("+").And.NotContain("/").And.NotContain("=");
+	}
+
+	[Fact]
+	public async Task Signing_with_a_secret_below_the_floor_throws_E3() {
+		var request = NewRequest();
+
+		var act = () => request.SignRequestAsync(KeyId, "short"); // < 16 bytes
+
+		await act.Should().ThrowAsync<ArgumentException>().WithMessage("*16 bytes*");
+	}
+
 	// --- ⑦ NonceBytes below 128-bit is rejected at configuration time (no silent weak nonce). ---
 
 	[Fact]
