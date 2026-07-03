@@ -46,7 +46,7 @@ await request.SignRequestAsync(keyId, signingSecret);
 var response = await client.SendAsync(request);
 ```
 
-`SigningOptions` controls the algorithm, covered components, signature label, `expires` window, the nonce (≥ 128-bit; smaller is rejected), the audience `tag`, and JSON serialization. Sign as the **last** mutation before sending — a later handler that changes the URI, headers, or body would invalidate the signature.
+`OutboundSigningOptions` controls the algorithm, covered components, signature label, `expires` window, the nonce (≥ 128-bit; smaller is rejected), the audience `tag`, and JSON serialization. Sign as the **last** mutation before sending — a later handler that changes the URI, headers, or body would invalidate the signature.
 
 ## Validating inbound webhooks (ASP.NET Core)
 
@@ -62,7 +62,7 @@ app.MapPost("/webhooks/partner", async (HttpRequest request, IConfiguration conf
 });
 ```
 
-`ValidateSignatureOrThrowAsync(...)` is the throwing variant. `ValidationOptions` controls the timestamp tolerance (default 5 min), future-skew window (default 1 min), and the required covered components.
+`ValidateSignatureOrThrowAsync(...)` is the throwing variant. `ValidationOptions` controls the timestamp tolerance (default 2 min), future-skew window (default 30 s), and the required covered components.
 
 ## Validating outside ASP.NET Core
 
