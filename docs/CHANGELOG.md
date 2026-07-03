@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [SemVer](ht
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-03
+
 ### Added
 
 - Initial release. Cirreum.Authentication.SignedRequest.Client is the outbound client SDK for the SignedRequest authentication scheme — the companion to the server-side `Cirreum.Authentication.SignedRequest` package. Signs outbound requests and validates inbound webhooks as RFC 9421 HTTP Message Signatures (RFC 9530 `Content-Digest`), with no dependency on the server-side scheme or `Cirreum.AuthenticationProvider`.
