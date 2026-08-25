@@ -8,6 +8,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) — [SemVer](ht
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-25
+
+### Updated
+
+- Fix the readme file docs
+
 ## [1.0.0] - 2026-07-03
 
 ### Added
